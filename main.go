@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -18,7 +20,7 @@ import (
 )
 
 const recordingSeconds = 10
-const maxUploadSize = 50 << 20
+const maxUploadSize = 50 * 1024 * 1024
 
 type Piro360 struct {
 	ID        int64
@@ -128,6 +130,10 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+	if header.Size <= 0 || header.Size > maxUploadSize {
+		http.Error(w, "video file is too large", http.StatusBadRequest)
+		return
+	}
 	if err := validateVideoUpload(header, file); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -137,7 +143,12 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "piro360"
 	}
-	filename := fmt.Sprintf("%d-%s", time.Now().UnixNano(), name)
+	randomPrefix, err := randomHex(8)
+	if err != nil {
+		http.Error(w, "failed to save upload", http.StatusInternalServerError)
+		return
+	}
+	filename := fmt.Sprintf("%s-%s", randomPrefix, name)
 	diskPath := filepath.Join(a.uploadDir, filename)
 
 	out, err := os.Create(diskPath)
@@ -145,15 +156,23 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to save upload", http.StatusInternalServerError)
 		return
 	}
-	defer out.Close()
+	writeSucceeded := false
+	defer func() {
+		_ = out.Close()
+		if !writeSucceeded {
+			_ = os.Remove(diskPath)
+		}
+	}()
 
 	if _, err := io.Copy(out, file); err != nil {
 		http.Error(w, "failed to save upload", http.StatusInternalServerError)
 		return
 	}
+	writeSucceeded = true
 
 	tags := strings.TrimSpace(r.FormValue("tags"))
 	if err := a.insertPiro("/uploads/"+filename, tags, recordingSeconds); err != nil {
+		_ = os.Remove(diskPath)
 		http.Error(w, "failed to store upload", http.StatusInternalServerError)
 		return
 	}
@@ -191,6 +210,7 @@ func (a *App) latest(limit int) ([]Piro360, error) {
 		if err := rows.Scan(&item.ID, &item.VideoPath, &item.Tags, &item.CreatedAt, &item.Duration); err != nil {
 			return nil, err
 		}
+		item.VideoPath = sanitizeVideoPath(item.VideoPath)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -247,6 +267,22 @@ func isAllowedVideoExtension(filename string) bool {
 	default:
 		return false
 	}
+}
+
+func randomHex(bytesLen int) (string, error) {
+	b := make([]byte, bytesLen)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func sanitizeVideoPath(input string) string {
+	clean := filepath.ToSlash(filepath.Clean("/" + strings.TrimSpace(input)))
+	if strings.HasPrefix(clean, "/uploads/") {
+		return clean
+	}
+	return ""
 }
 
 var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
