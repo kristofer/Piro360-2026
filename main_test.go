@@ -40,7 +40,7 @@ func TestUploadAddsPiroAndReturnsFeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	_, _ = filePart.Write([]byte("video-data"))
+	_, _ = filePart.Write([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'})
 	_ = writer.WriteField("tags", "beach, sunset")
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
@@ -76,6 +76,34 @@ func TestUploadAddsPiroAndReturnsFeed(t *testing.T) {
 	stored := filepath.Join(app.uploadDir, strings.TrimPrefix(items[0].VideoPath, "/uploads/"))
 	if _, err := os.Stat(stored); err != nil {
 		t.Fatalf("expected uploaded file to exist on disk: %v", err)
+	}
+}
+
+func TestUploadRejectsNonVideoFiles(t *testing.T) {
+	app := newTestApp(t)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	filePart, err := writer.CreateFormFile("video", "not-video.txt")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	_, _ = filePart.Write([]byte("not a video"))
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	res := httptest.NewRecorder()
+
+	app.handleUpload(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "video") {
+		t.Fatalf("expected validation error, got: %s", res.Body.String())
 	}
 }
 

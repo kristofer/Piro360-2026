@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 )
 
 const recordingSeconds = 10
+const maxUploadSize = 50 << 20
 
 type Piro360 struct {
 	ID        int64
@@ -115,7 +117,7 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseMultipartForm(128 << 20); err != nil {
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		http.Error(w, "invalid upload payload", http.StatusBadRequest)
 		return
 	}
@@ -126,6 +128,10 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+	if err := validateVideoUpload(header, file); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	name := safeName(header.Filename)
 	if name == "" {
@@ -204,13 +210,52 @@ func safeName(name string) string {
 	return strings.Trim(base, "-.")
 }
 
+func validateVideoUpload(header *multipart.FileHeader, file multipart.File) error {
+	if !isAllowedVideoExtension(header.Filename) {
+		return errors.New("unsupported video file extension")
+	}
+
+	declaredType := strings.ToLower(strings.TrimSpace(header.Header.Get("Content-Type")))
+	if declaredType != "" && declaredType != "application/octet-stream" && !strings.HasPrefix(declaredType, "video/") {
+		return errors.New("uploaded file must be a video")
+	}
+
+	head := make([]byte, 512)
+	n, err := file.Read(head)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return errors.New("failed to read uploaded file")
+	}
+
+	if seeker, ok := file.(io.Seeker); ok {
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			return errors.New("failed to process uploaded file")
+		}
+	}
+
+	detectedType := strings.ToLower(http.DetectContentType(head[:n]))
+	if detectedType != "application/octet-stream" && !strings.HasPrefix(detectedType, "video/") {
+		return errors.New("uploaded file must be a video")
+	}
+
+	return nil
+}
+
+func isAllowedVideoExtension(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mp4", ".mov", ".m4v", ".webm", ".3gp":
+		return true
+	default:
+		return false
+	}
+}
+
 var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Piro360</title>
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" crossorigin="anonymous"></script>
   <style>
     body { font-family: sans-serif; margin: 2rem auto; max-width: 900px; padding: 0 1rem; }
     form { display: grid; gap: .75rem; border: 1px solid #ddd; padding: 1rem; border-radius: 8px; }
