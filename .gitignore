@@ -1,0 +1,6 @@
+# Build artifacts
+piro360-2026
+
+# Local runtime data
+piro360.db
+uploads/
